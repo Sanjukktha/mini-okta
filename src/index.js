@@ -37,6 +37,9 @@ app.use(passport.session());
 
 // Routes
 app.use("/api/auth", authRoutes);
+const mfaRoutes = require("./routes/mfaRoutes");
+app.use("/api/auth/mfa", mfaRoutes);
+
 
 // DB
 connectDB();

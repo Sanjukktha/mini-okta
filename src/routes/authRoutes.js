@@ -38,13 +38,34 @@ router.post("/register", async (req, res) => {
 router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
+
     const user = await User.findOne({ email });
     if (!user) return res.status(400).json({ message: "Invalid credentials" });
+
+    console.log("🔍 User fetched from DB:", user);
 
     const match = await bcrypt.compare(password, user.password);
     if (!match) return res.status(400).json({ message: "Invalid credentials" });
 
-    const token = generateToken(user);
+    // Log before MFA check
+    console.log("🔒 MFA Enabled?", user.mfaEnabled);
+
+    if (user.mfaEnabled) {
+      console.log("🛑 MFA is enabled — stopping before issuing token");
+      return res.status(200).json({
+        message: "MFA required",
+        mfaRequired: true
+      });
+    }
+
+    const token = jwt.sign(
+      { id: user._id, email: user.email },
+      process.env.JWT_SECRET,
+      { expiresIn: "1h" }
+    );
+
+    console.log("✅ Login success, issuing token");
+
     res.json({ message: "Login success", token });
   } catch (err) {
     console.error("❌ Login error:", err);
@@ -52,22 +73,55 @@ router.post("/login", async (req, res) => {
   }
 });
 
+
+
 // ------------------- GOOGLE AUTH -------------------
 router.get("/google", passport.authenticate("google", { scope: ["profile", "email"] }));
 
 router.get(
   "/google/callback",
   passport.authenticate("google", { session: false }),
-  (req, res) => {
+  async (req, res) => {
     try {
-      const token = req.user.token;
+      const user = req.user;
+      console.log("✅ Google OAuth successful:", user.email);
+
+      // Fetch user again from DB to check MFA flag
+      const dbUser = await User.findOne({ email: user.email });
+
+      if (!dbUser) {
+        console.error("❌ User not found after Google OAuth");
+        return res.status(404).json({ message: "User not found" });
+      }
+
+      console.log("🔒 MFA Enabled?", dbUser.mfaEnabled);
+
+      // 🔹 If MFA is enabled, do NOT send token yet — require MFA code validation
+      if (dbUser.mfaEnabled) {
+  console.log("🛑 MFA is enabled — returning JSON instead of redirect");
+  return res.status(200).json({
+    message: "MFA required",
+    mfaRequired: true,
+    email: dbUser.email
+  });
+}
+
+      // 🔹 Otherwise issue JWT directly
+      const token = jwt.sign(
+        { id: dbUser._id, email: dbUser.email },
+        process.env.JWT_SECRET,
+        { expiresIn: "1h" }
+      );
+
+      console.log("✅ Issued token for Google user:", dbUser.email);
+
       res.status(200).json({
         message: "Google login success",
         token,
         user: {
-          name: req.user.name,
-          email: req.user.email,
-          provider: req.user.provider
+          name: dbUser.name,
+          email: dbUser.email,
+          provider: dbUser.provider
         }
       });
     } catch (err) {
